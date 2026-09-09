@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kernelpack"
+version = "0.1.0"
+description = "Meshfree geometry, RBF-FD, partition-of-unity methods, and PDE solvers for Python."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Varun Shankar" },
+]
+keywords = ["meshfree", "rbf-fd", "radial-basis-functions", "pde", "scientific-computing"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Mathematics",
+]
+dependencies = [
+  "numpy>=2.0",
+  "scipy>=1.14",
+  "numba>=0.61",
+]
+
+[project.optional-dependencies]
+examples = [
+  "matplotlib>=3.9",
+]
+dev = [
+  "build>=1.2",
+  "matplotlib>=3.9",
+  "pytest>=8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/VarShankar/kernelpack-python"
+Documentation = "https://github.com/VarShankar/kernelpack-python#readme"
+Issues = "https://github.com/VarShankar/kernelpack-python/issues"
+Source = "https://github.com/VarShankar/kernelpack-python"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use kernelpack-python, please cite the software and the papers corresponding to the methods you use."
+title: "kernelpack-python"
+type: software
+authors:
+  - family-names: Shankar
+    given-names: Varun
+version: 0.1.0
+date-released: 2026-09-08
+license: BSD-3-Clause
+repository-code: "https://github.com/VarShankar/kernelpack-python"
+url: "https://github.com/VarShankar/kernelpack-python"
+keywords:
+  - meshfree methods
+  - RBF-FD
+  - radial basis functions
+  - partial differential equations

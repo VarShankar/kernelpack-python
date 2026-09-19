@@ -19,10 +19,29 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTDIR = ROOT / "docs" / "readme_assets"
 OUTDIR.mkdir(parents=True, exist_ok=True)
 
+BACKGROUND = "#fbfaf6"
+INK = "#172033"
+INTERIOR = "#3157d5"
+BOUNDARY = "#0f8b8d"
+GHOST = "#f2a541"
 
-def build_surface(n_sites: int, geom_radius: float) -> EmbeddedSurface:
+
+def style_figure(fig) -> None:
+    fig.patch.set_facecolor(BACKGROUND)
+
+
+def style_surface_axes(ax) -> None:
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_facecolor(BACKGROUND)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+
+def build_surface(n_sites: int, geom_radius: float, aspect: float = 0.7) -> EmbeddedSurface:
     t = np.linspace(0.0, 2.0 * np.pi, n_sites, endpoint=False)
-    curve = np.column_stack([np.cos(t), 0.7 * np.sin(t)])
+    curve = np.column_stack([np.cos(t), aspect * np.sin(t)])
     surface = EmbeddedSurface()
     surface.set_data_sites(curve)
     surface.build_closed_geometric_model_ps(2, geom_radius, curve.shape[0])
@@ -31,7 +50,7 @@ def build_surface(n_sites: int, geom_radius: float) -> EmbeddedSurface:
 
 
 def build_domain(*, do_outer_refinement: bool = True) -> tuple[EmbeddedSurface, object]:
-    surface = build_surface(120, 0.06)
+    surface = build_surface(160, 0.06, aspect=1.0)
     generator = DomainNodeGenerator()
     domain = generator.build_domain_descriptor_from_geometry(
         surface,
@@ -46,40 +65,45 @@ def build_domain(*, do_outer_refinement: bool = True) -> tuple[EmbeddedSurface, 
 
 
 def save_geometry(surface, domain) -> Path:
-    fig = plt.figure(figsize=(8, 8), constrained_layout=True)
-    axes = fig.subplot_mosaic([["sites", "boundary"], ["domain", "domain"]])
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.6), constrained_layout=True)
+    style_figure(fig)
     xb = domain.get_bdry_nodes()
     nr = domain.get_nrmls()
     xi = domain.get_interior_nodes()
     xg = domain.get_ghost_nodes()
 
-    axes["sites"].plot(surface.data_sites[:, 0], surface.data_sites[:, 1], "ko", ms=3)
-    axes["sites"].set_title("Input Sites")
-
-    axes["boundary"].plot(xb[:, 0], xb[:, 1], ".", color="#0f766e", ms=4)
+    axes[0].scatter(
+        surface.data_sites[:, 0], surface.data_sites[:, 1],
+        s=14, color="#cbd3df", edgecolors="none",
+    )
+    axes[0].scatter(xb[:, 0], xb[:, 1], s=12, color=BOUNDARY, edgecolors="none")
     step = max(1, xb.shape[0] // 40)
-    axes["boundary"].quiver(
+    axes[0].quiver(
         xb[::step, 0],
         xb[::step, 1],
         nr[::step, 0],
         nr[::step, 1],
         angles="xy",
         scale_units="xy",
-        scale=18,
-        color="#b91c1c",
-        width=0.003,
+        scale=13,
+        color="#df5b49",
+        width=0.004,
+        headwidth=4,
     )
-    axes["boundary"].set_title("Boundary Samples and Normals")
+    axes[0].set_title("Geometry and outward normals", color=INK, weight="semibold", pad=10)
 
-    axes["domain"].plot(xi[:, 0], xi[:, 1], ".", color="#1d4ed8", ms=3, label="Interior")
-    axes["domain"].plot(xb[:, 0], xb[:, 1], ".", color="#0f766e", ms=3, label="Boundary")
-    axes["domain"].plot(xg[:, 0], xg[:, 1], ".", color="#f59e0b", ms=3, label="Ghost")
-    axes["domain"].legend(frameon=False, fontsize=9)
-    axes["domain"].set_title("Boundary-Refined Interior, Boundary, and Ghost Nodes")
+    axes[1].scatter(xi[:, 0], xi[:, 1], s=10, color=INTERIOR, edgecolors="none", label="interior")
+    axes[1].scatter(xb[:, 0], xb[:, 1], s=11, color=BOUNDARY, edgecolors="none", label="boundary")
+    axes[1].scatter(xg[:, 0], xg[:, 1], s=11, color=GHOST, edgecolors="none", label="ghost")
+    axes[1].legend(
+        frameon=False, loc="lower center", bbox_to_anchor=(0.5, -0.08),
+        ncol=3, fontsize=10, markerscale=1.4,
+    )
+    axes[1].set_title("Geometry-defined node cloud", color=INK, weight="semibold", pad=10)
 
-    for ax in axes.values():
-        ax.set_aspect("equal", adjustable="box")
-        ax.grid(alpha=0.2)
+    for ax in axes:
+        style_surface_axes(ax)
+    fig.suptitle("From sampled geometry to a meshfree domain", color=INK, weight="bold", fontsize=16)
 
     path = OUTDIR / "geometry_domain.png"
     fig.savefig(path, dpi=180, bbox_inches="tight")
@@ -96,43 +120,29 @@ def save_poisson(domain) -> Path:
     )
     solver.init(domain, 4)
 
-    u_exact = lambda x: (x[:, 0] ** 2 + x[:, 1] ** 2) ** 2 - (x[:, 0] ** 2 + x[:, 1] ** 2) + 1.0 / 6.0
-    forcing = lambda x: 4.0 - 16.0 * (x[:, 0] ** 2 + x[:, 1] ** 2)
-    neu_coeff = lambda xb: np.ones(xb.shape[0])
-    dir_coeff = lambda xb: np.zeros(xb.shape[0])
-    bc = lambda neu_coeffs, dir_coeffs, nr, xb: np.sum(
-        np.column_stack(
-            [
-                4.0 * xb[:, 0] * (xb[:, 0] ** 2 + xb[:, 1] ** 2) - 2.0 * xb[:, 0],
-                4.0 * xb[:, 1] * (xb[:, 0] ** 2 + xb[:, 1] ** 2) - 2.0 * xb[:, 1],
-            ]
-        )
-        * nr,
-        axis=1,
-    )
+    u_exact = lambda x: 1.0 - x[:, 0] ** 2 - x[:, 1] ** 2
+    forcing = lambda x: 4.0 * np.ones(x.shape[0])
+    neu_coeff = lambda xb: np.zeros(xb.shape[0])
+    dir_coeff = lambda xb: np.ones(xb.shape[0])
+    bc = lambda neu_coeffs, dir_coeffs, nr, xb: u_exact(xb)
 
     result = solver.solve(forcing, neu_coeff, dir_coeff, bc)
     x_phys = domain.get_int_bdry_nodes()
     u = result["u"]
     u_true = u_exact(x_phys)
-    u = u - np.mean(u - u_true)
-    err = u - u_true
-
     tri = mtri.Triangulation(x_phys[:, 0], x_phys[:, 1])
 
-    fig, axes = plt.subplots(2, 1, figsize=(8, 8), constrained_layout=True)
-    cf0 = axes[0].tricontourf(tri, u, levels=24, cmap="viridis")
-    axes[0].plot(domain.get_bdry_nodes()[:, 0], domain.get_bdry_nodes()[:, 1], "k.", ms=1.5, alpha=0.5)
-    axes[0].set_title("Poisson Solution")
-    fig.colorbar(cf0, ax=axes[0], shrink=0.9)
-
-    cf1 = axes[1].tricontourf(tri, err, levels=24, cmap="coolwarm")
-    axes[1].set_title(f"Poisson Error\nmax |e| = {np.max(np.abs(err)):.2e}")
-    fig.colorbar(cf1, ax=axes[1], shrink=0.9)
-
-    for ax in axes:
-        ax.set_aspect("equal", adjustable="box")
-        ax.grid(alpha=0.15)
+    fig, ax = plt.subplots(figsize=(9.4, 4.8), constrained_layout=True)
+    style_figure(fig)
+    field = ax.tripcolor(tri, u, shading="gouraud", cmap="viridis")
+    xb = domain.get_bdry_nodes()
+    ax.plot(xb[:, 0], xb[:, 1], color=INK, lw=1.1, alpha=0.8)
+    ax.tricontour(tri, u, levels=9, colors="white", linewidths=0.45, alpha=0.38)
+    style_surface_axes(ax)
+    ax.set_title("Meshfree Poisson solution", color=INK, weight="bold", fontsize=16, pad=12)
+    colorbar = fig.colorbar(field, ax=ax, shrink=0.82, pad=0.03)
+    colorbar.set_label(r"$u_h$", color=INK, weight="semibold")
+    colorbar.outline.set_visible(False)
 
     path = OUTDIR / "poisson_solution.png"
     fig.savefig(path, dpi=180, bbox_inches="tight")
@@ -177,29 +187,29 @@ def save_diffusion(domain) -> Path:
 
     u_final = solver.current_physical_state()
     u_true_final = u_exact(t_final, x_phys)
-    err = u_final - u_true_final
     tri = mtri.Triangulation(x_phys[:, 0], x_phys[:, 1])
 
-    fig = plt.figure(figsize=(8, 8), constrained_layout=True)
-    axes = fig.subplot_mosaic([["solution", "error"], ["history", "history"]])
-    cf0 = axes["solution"].tricontourf(tri, u_final, levels=24, cmap="viridis")
-    axes["solution"].set_title(f"Diffusion at t = {t_final:.2f}")
-    fig.colorbar(cf0, ax=axes["solution"], shrink=0.85)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), constrained_layout=True)
+    style_figure(fig)
+    field = axes[0].tripcolor(tri, u_final, shading="gouraud", cmap="viridis")
+    axes[0].tricontour(tri, u_final, levels=8, colors="white", linewidths=0.4, alpha=0.35)
+    style_surface_axes(axes[0])
+    axes[0].set_title(rf"BDF3 diffusion at $t={t_final:.2f}$", color=INK, weight="semibold")
+    colorbar = fig.colorbar(field, ax=axes[0], shrink=0.82, pad=0.03)
+    colorbar.set_label(r"$u_h$", color=INK, weight="semibold")
+    colorbar.outline.set_visible(False)
 
-    cf1 = axes["error"].tricontourf(tri, err, levels=24, cmap="coolwarm")
-    axes["error"].set_title(f"Final-Time Error\nmax |e| = {np.max(np.abs(err)):.2e}")
-    fig.colorbar(cf1, ax=axes["error"], shrink=0.85)
-
-    axes["history"].plot(times, errors, color="#1d4ed8", lw=2)
-    axes["history"].scatter(times, errors, color="#0f766e", s=18)
-    axes["history"].set_title("Time March to Final Time")
-    axes["history"].set_xlabel("t")
-    axes["history"].set_ylabel("max nodal error")
-    axes["history"].grid(alpha=0.2)
-
-    for ax in (axes["solution"], axes["error"]):
-        ax.set_aspect("equal", adjustable="box")
-        ax.grid(alpha=0.15)
+    positive_times = np.asarray(times[1:])
+    positive_errors = np.maximum(np.asarray(errors[1:]), np.finfo(float).tiny)
+    axes[1].semilogy(positive_times, positive_errors, color=INTERIOR, lw=2.6)
+    axes[1].scatter(positive_times, positive_errors, color=BOUNDARY, s=24, zorder=3)
+    axes[1].set_title("Error through the time march", color=INK, weight="semibold")
+    axes[1].set_xlabel(r"time $t$", color=INK)
+    axes[1].set_ylabel(r"$\|u_h-u\|_{\infty}$", color=INK)
+    axes[1].grid(alpha=0.18, which="both")
+    axes[1].set_facecolor(BACKGROUND)
+    for spine in ("top", "right"):
+        axes[1].spines[spine].set_visible(False)
 
     path = OUTDIR / "diffusion_solution.png"
     fig.savefig(path, dpi=180, bbox_inches="tight")
@@ -208,20 +218,9 @@ def save_diffusion(domain) -> Path:
 
 
 def main() -> None:
-    geometry_surface = build_surface(50, 0.05)
-    geometry_generator = DomainNodeGenerator()
-    geometry_domain = geometry_generator.build_domain_descriptor_from_geometry(
-        geometry_surface,
-        0.08,
-        seed=17,
-        strip_count=5,
-        do_outer_refinement=True,
-        outer_fraction_of_h=0.5,
-        outer_refinement_zone_size_as_multiple_of_h=2.0,
-    )
-    _, solver_domain = build_domain(do_outer_refinement=True)
+    geometry_surface, solver_domain = build_domain(do_outer_refinement=False)
     paths = [
-        save_geometry(geometry_surface, geometry_domain),
+        save_geometry(geometry_surface, solver_domain),
         save_poisson(solver_domain),
         save_diffusion(solver_domain),
     ]

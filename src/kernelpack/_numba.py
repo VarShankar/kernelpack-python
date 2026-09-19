@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 try:
-    from numba import njit
+    from numba import njit, prange
 
     NUMBA_AVAILABLE = True
 except Exception:  # pragma: no cover - fallback path only matters when numba is absent
@@ -376,3 +376,344 @@ def divfree_gram_matrix(x: np.ndarray, y: np.ndarray, degree: int) -> np.ndarray
                 block = block + degree * re_m2 + full_diag
             out[a * nx : (a + 1) * nx, b * ny : (b + 1) * ny] = block
     return out
+
+
+if NUMBA_AVAILABLE:
+
+    @njit(cache=True, fastmath=True)
+    def _surface_tangent_frame_numba(normal: np.ndarray) -> np.ndarray:
+        eps = np.finfo(np.float64).eps
+        norm = np.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        unit = normal / max(norm, eps)
+        dominant = 0
+        if abs(unit[1]) > abs(unit[dominant]):
+            dominant = 1
+        if abs(unit[2]) > abs(unit[dominant]):
+            dominant = 2
+        first = np.zeros(3, dtype=np.float64)
+        second = np.zeros(3, dtype=np.float64)
+        if dominant == 0:
+            first[1] = 1.0
+            second[2] = 1.0
+        elif dominant == 1:
+            first[0] = 1.0
+            second[2] = 1.0
+        else:
+            first[0] = 1.0
+            second[1] = 1.0
+        projection = unit[0] * first[0] + unit[1] * first[1] + unit[2] * first[2]
+        tangent_one = first - projection * unit
+        tangent_one /= max(np.sqrt(np.sum(tangent_one * tangent_one)), eps)
+        projection_normal = unit[0] * second[0] + unit[1] * second[1] + unit[2] * second[2]
+        projection_tangent = (
+            tangent_one[0] * second[0]
+            + tangent_one[1] * second[1]
+            + tangent_one[2] * second[2]
+        )
+        tangent_two = second - projection_normal * unit - projection_tangent * tangent_one
+        tangent_two /= max(np.sqrt(np.sum(tangent_two * tangent_two)), eps)
+        frame = np.empty((3, 2), dtype=np.float64)
+        frame[:, 0] = tangent_one
+        frame[:, 1] = tangent_two
+        return frame
+
+
+    @njit(cache=True, fastmath=True, parallel=True)
+    def _surface_local_systems_numba(
+        points: np.ndarray,
+        normals: np.ndarray,
+        neighbors: np.ndarray,
+        index_set: np.ndarray,
+        phs_degree: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        row_count = points.shape[0]
+        stencil_size = neighbors.shape[1]
+        polynomial_count = index_set.shape[0]
+        system_size = stencil_size + polynomial_count
+        lhs_all = np.zeros((row_count, system_size, system_size), dtype=np.float64)
+        rhs_all = np.zeros((row_count, system_size, 3), dtype=np.float64)
+        frames = np.empty((row_count, 3, 2), dtype=np.float64)
+        derivative_orders = np.array([[2, 0], [0, 2], [1, 0], [0, 1]], dtype=np.int64)
+        zero_derivative = np.zeros((1, 2), dtype=np.int64)
+        eps = np.finfo(np.float64).eps
+        for row in prange(row_count):
+            frame = _surface_tangent_frame_numba(normals[row])
+            frames[row] = frame
+            center = points[neighbors[row, 0]]
+            scaled = np.empty((stencil_size, 2), dtype=np.float64)
+            width = 0.0
+            for i in range(stencil_size):
+                point = points[neighbors[row, i]] - center
+                for axis in range(2):
+                    value = point[0] * frame[0, axis] + point[1] * frame[1, axis] + point[2] * frame[2, axis]
+                    scaled[i, axis] = value
+                    width = max(width, abs(value))
+            width = max(width, eps)
+            scaled /= width
+            polynomial = _legendre_tensor_evaluate_numba(
+                scaled, index_set, zero_derivative
+            )[:, :, 0]
+            for i in range(stencil_size):
+                for j in range(stencil_size):
+                    dx = scaled[i, 0] - scaled[j, 0]
+                    dy = scaled[i, 1] - scaled[j, 1]
+                    radius = np.sqrt(dx * dx + dy * dy)
+                    lhs_all[row, i, j] = (radius + eps) ** phs_degree
+                for j in range(polynomial_count):
+                    value = polynomial[i, j]
+                    lhs_all[row, i, stencil_size + j] = value
+                    lhs_all[row, stencil_size + j, i] = value
+                radius = np.sqrt(scaled[i, 0] ** 2 + scaled[i, 1] ** 2)
+                first_over_radius = phs_degree * (radius + eps) ** (phs_degree - 2)
+                second = phs_degree * (phs_degree - 1) * (radius + eps) ** (phs_degree - 2)
+                rhs_all[row, i, 0] = (second + first_over_radius) / (width * width)
+                rhs_all[row, i, 1] = -scaled[i, 0] * first_over_radius / width
+                rhs_all[row, i, 2] = -scaled[i, 1] * first_over_radius / width
+            derivatives = _legendre_tensor_evaluate_numba(
+                scaled[:1], index_set, derivative_orders
+            )[0]
+            for j in range(polynomial_count):
+                rhs_all[row, stencil_size + j, 0] = (
+                    derivatives[j, 0] + derivatives[j, 1]
+                ) / (width * width)
+                rhs_all[row, stencil_size + j, 1] = derivatives[j, 2] / width
+                rhs_all[row, stencil_size + j, 2] = derivatives[j, 3] / width
+        return lhs_all, rhs_all, frames
+
+
+    @njit(cache=True, fastmath=True, parallel=True)
+    def _surface_interpolation_systems_numba(
+        source_points: np.ndarray,
+        target_points: np.ndarray,
+        target_normals: np.ndarray,
+        neighbors: np.ndarray,
+        index_set: np.ndarray,
+        phs_degree: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        row_count = target_points.shape[0]
+        stencil_size = neighbors.shape[1]
+        polynomial_count = index_set.shape[0]
+        system_size = stencil_size + polynomial_count
+        lhs_all = np.zeros((row_count, system_size, system_size), dtype=np.float64)
+        rhs_all = np.zeros((row_count, system_size), dtype=np.float64)
+        zero_derivative = np.zeros((1, 2), dtype=np.int64)
+        query = np.zeros((1, 2), dtype=np.float64)
+        query_polynomial = _legendre_tensor_evaluate_numba(
+            query, index_set, zero_derivative
+        )[0, :, 0]
+        eps = np.finfo(np.float64).eps
+        for row in prange(row_count):
+            frame = _surface_tangent_frame_numba(target_normals[row])
+            scaled = np.empty((stencil_size, 2), dtype=np.float64)
+            width = 0.0
+            target = target_points[row]
+            for i in range(stencil_size):
+                point = source_points[neighbors[row, i]] - target
+                for axis in range(2):
+                    value = point[0] * frame[0, axis] + point[1] * frame[1, axis] + point[2] * frame[2, axis]
+                    scaled[i, axis] = value
+                    width = max(width, abs(value))
+            width = max(width, eps)
+            scaled /= width
+            polynomial = _legendre_tensor_evaluate_numba(
+                scaled, index_set, zero_derivative
+            )[:, :, 0]
+            for i in range(stencil_size):
+                for j in range(stencil_size):
+                    dx = scaled[i, 0] - scaled[j, 0]
+                    dy = scaled[i, 1] - scaled[j, 1]
+                    radius = np.sqrt(dx * dx + dy * dy)
+                    lhs_all[row, i, j] = (radius + eps) ** phs_degree
+                for j in range(polynomial_count):
+                    value = polynomial[i, j]
+                    lhs_all[row, i, stencil_size + j] = value
+                    lhs_all[row, stencil_size + j, i] = value
+                radius = np.sqrt(scaled[i, 0] ** 2 + scaled[i, 1] ** 2)
+                rhs_all[row, i] = (radius + eps) ** phs_degree
+            rhs_all[row, stencil_size:] = query_polynomial
+        return lhs_all, rhs_all
+
+
+    @njit(cache=True, fastmath=True, parallel=True)
+    def _surface_apply_scalar_numba(
+        weights: np.ndarray, neighbors: np.ndarray, values: np.ndarray
+    ) -> np.ndarray:
+        out = np.empty(weights.shape[0], dtype=values.dtype)
+        for row in prange(weights.shape[0]):
+            total = 0.0
+            for column in range(weights.shape[1]):
+                total += weights[row, column] * values[neighbors[row, column]]
+            out[row] = total
+        return out
+
+
+    @njit(cache=True, fastmath=True, parallel=True)
+    def _surface_apply_matrix_numba(
+        weights: np.ndarray, neighbors: np.ndarray, values: np.ndarray
+    ) -> np.ndarray:
+        out = np.empty((weights.shape[0], values.shape[1]), dtype=values.dtype)
+        for row in prange(weights.shape[0]):
+            for component in range(values.shape[1]):
+                total = 0.0
+                for column in range(weights.shape[1]):
+                    total += weights[row, column] * values[neighbors[row, column], component]
+                out[row, component] = total
+        return out
+
+
+    @njit(cache=True, fastmath=True, parallel=True)
+    def _sbf_basis_derivatives_numba(
+        queries: np.ndarray, centers: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        basis = np.empty((queries.shape[0], centers.shape[0]), dtype=np.float64)
+        derivative_one = np.empty_like(basis)
+        derivative_two = np.empty_like(basis)
+        eps = np.finfo(np.float64).eps
+        for row in prange(queries.shape[0]):
+            point = queries[row]
+            reference = np.array([1.0, 0.0, 0.0]) if abs(point[2]) > 0.9 else np.array([0.0, 0.0, 1.0])
+            tangent_one = np.array([
+                reference[1] * point[2] - reference[2] * point[1],
+                reference[2] * point[0] - reference[0] * point[2],
+                reference[0] * point[1] - reference[1] * point[0],
+            ])
+            tangent_one /= max(np.sqrt(np.sum(tangent_one * tangent_one)), eps)
+            tangent_two = np.array([
+                point[1] * tangent_one[2] - point[2] * tangent_one[1],
+                point[2] * tangent_one[0] - point[0] * tangent_one[2],
+                point[0] * tangent_one[1] - point[1] * tangent_one[0],
+            ])
+            tangent_two /= max(np.sqrt(np.sum(tangent_two * tangent_two)), eps)
+            for column in range(centers.shape[0]):
+                difference = point - centers[column]
+                radius = np.sqrt(np.sum(difference * difference))
+                basis[row, column] = radius**8 * np.log(radius + eps)
+                radial = radius**6 * (8.0 * np.log(radius + eps) + 1.0)
+                derivative_one[row, column] = radial * np.sum(difference * tangent_one)
+                derivative_two[row, column] = radial * np.sum(difference * tangent_two)
+        return basis, derivative_one, derivative_two
+
+
+    @njit(cache=True, fastmath=True, parallel=True)
+    def _sbf_basis_numba(
+        queries: np.ndarray, centers: np.ndarray
+    ) -> np.ndarray:
+        basis = np.empty((queries.shape[0], centers.shape[0]), dtype=np.float64)
+        eps = np.finfo(np.float64).eps
+        for row in prange(queries.shape[0]):
+            for column in range(centers.shape[0]):
+                difference = queries[row] - centers[column]
+                radius = np.sqrt(np.sum(difference * difference))
+                basis[row, column] = radius**8 * np.log(radius + eps)
+        return basis
+
+
+    @njit(cache=True, fastmath=True)
+    def _farthest_point_subset_numba(sites: np.ndarray, count: int) -> np.ndarray:
+        selected = np.empty(count, dtype=np.int64)
+        center = np.zeros(sites.shape[1], dtype=np.float64)
+        for row in range(sites.shape[0]):
+            center += sites[row]
+        center /= sites.shape[0]
+        first = 0
+        first_distance = -1.0
+        for row in range(sites.shape[0]):
+            value = np.sum((sites[row] - center) ** 2)
+            if value > first_distance:
+                first = row
+                first_distance = value
+        selected[0] = first
+        distance = np.empty(sites.shape[0], dtype=np.float64)
+        for row in range(sites.shape[0]):
+            distance[row] = np.sum((sites[row] - sites[first]) ** 2)
+        distance[first] = -np.inf
+        for index in range(1, count):
+            next_index = np.argmax(distance)
+            selected[index] = next_index
+            for row in range(sites.shape[0]):
+                candidate = np.sum((sites[row] - sites[next_index]) ** 2)
+                distance[row] = min(distance[row], candidate)
+            distance[next_index] = -np.inf
+        return np.sort(selected)
+
+else:
+    _surface_local_systems_numba = None
+    _surface_interpolation_systems_numba = None
+    _surface_apply_scalar_numba = None
+    _surface_apply_matrix_numba = None
+    _sbf_basis_derivatives_numba = None
+    _sbf_basis_numba = None
+    _farthest_point_subset_numba = None
+
+
+def surface_local_systems(
+    points: np.ndarray,
+    normals: np.ndarray,
+    neighbors: np.ndarray,
+    index_set: np.ndarray,
+    phs_degree: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    if not NUMBA_AVAILABLE:
+        return None
+    return _surface_local_systems_numba(
+        np.asarray(points, dtype=float),
+        np.asarray(normals, dtype=float),
+        np.asarray(neighbors, dtype=np.int64),
+        np.asarray(index_set, dtype=np.int64),
+        int(phs_degree),
+    )
+
+
+def surface_interpolation_systems(
+    source_points: np.ndarray,
+    target_points: np.ndarray,
+    target_normals: np.ndarray,
+    neighbors: np.ndarray,
+    index_set: np.ndarray,
+    phs_degree: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if not NUMBA_AVAILABLE:
+        return None
+    return _surface_interpolation_systems_numba(
+        np.asarray(source_points, dtype=float),
+        np.asarray(target_points, dtype=float),
+        np.asarray(target_normals, dtype=float),
+        np.asarray(neighbors, dtype=np.int64),
+        np.asarray(index_set, dtype=np.int64),
+        int(phs_degree),
+    )
+
+
+def surface_apply(weights: np.ndarray, neighbors: np.ndarray, values: np.ndarray) -> np.ndarray:
+    weights = np.asarray(weights, dtype=float)
+    neighbors = np.asarray(neighbors, dtype=np.int64)
+    values = np.asarray(values)
+    if NUMBA_AVAILABLE and values.ndim == 1:
+        return _surface_apply_scalar_numba(weights, neighbors, values)
+    if NUMBA_AVAILABLE and values.ndim == 2:
+        return _surface_apply_matrix_numba(weights, neighbors, values)
+    return np.einsum("nk,nk...->n...", weights, values[neighbors])
+
+
+def sbf_basis_derivatives(
+    queries: np.ndarray, centers: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    if not NUMBA_AVAILABLE:
+        return None
+    return _sbf_basis_derivatives_numba(
+        np.asarray(queries, dtype=float), np.asarray(centers, dtype=float)
+    )
+
+
+def sbf_basis(queries: np.ndarray, centers: np.ndarray) -> np.ndarray | None:
+    if not NUMBA_AVAILABLE:
+        return None
+    return _sbf_basis_numba(
+        np.asarray(queries, dtype=float), np.asarray(centers, dtype=float)
+    )
+
+
+def farthest_point_subset_numba(sites: np.ndarray, count: int) -> np.ndarray | None:
+    if not NUMBA_AVAILABLE:
+        return None
+    return _farthest_point_subset_numba(np.asarray(sites, dtype=float), int(count))

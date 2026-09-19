@@ -1,3 +1,3 @@
-from . import divfree, domain, geometry, nodes, poly, rbffd, solvers
+from . import divfree, domain, geometry, manifold, nodes, poly, rbffd, solvers
 
-__all__ = ["divfree", "domain", "geometry", "nodes", "poly", "rbffd", "solvers"]
+__all__ = ["divfree", "domain", "geometry", "manifold", "nodes", "poly", "rbffd", "solvers"]

@@ -8,18 +8,13 @@
 **Meshfree geometry, RBF-FD, partition-of-unity methods, and PDE solvers for
 Python.**
 
-`kernelpack-python` provides NumPy/SciPy implementations of meshfree geometry,
-scattered-node discretizations, and PDE solvers on fixed domains, moving
-domains, and evolving surfaces. It combines reusable geometry and node
-generation with standard and overlapped PHS+poly RBF-FD, weighted least
-squares, localized partition-of-unity approximations, and sparse iterative
-solvers.
-
-The moving-domain and moving-surface implementations follow the same published
-methods and numerical conventions as
+`kernelpack-python` is the NumPy/SciPy member of the KernelPack family. It
+brings meshfree geometry, scattered-node generation, polynomial tools,
+RBF-FD, partition-of-unity approximation, and PDE solvers into a Python
+codebase built from inspectable arrays, sparse operators, and compiled
+numerical kernels. Companion implementations are available in
 [`kernelpack-matlab`](https://github.com/VarShankar/kernelpack-matlab) and
-[`kernelpack-jax`](https://github.com/VarShankar/kernelpack-jax), while keeping
-the execution path in NumPy and SciPy.
+[`kernelpack-jax`](https://github.com/VarShankar/kernelpack-jax).
 
 ![Geometry and a boundary-refined meshfree node cloud](docs/readme_assets/geometry_domain.png)
 
@@ -33,47 +28,52 @@ interior while retaining boundary and ghost-node structure.
 [Examples](#examples) | [Tests](#verification) |
 [Papers](#research-foundations) | [Citation](#citation)
 
-## Who this is for
+## What it includes
 
-This package is intended for numerical PDE researchers and Python users who
-want to:
-
-- prototype PHS+poly RBF-FD or weighted-least-squares discretizations;
-- generate scattered nodes and differential operators on embedded domains;
-- compare standard and overlapped local assembly;
-- solve elliptic and diffusion problems without constructing a volume mesh;
-- solve semi-Lagrangian ADR problems with moving embedded boundaries;
-- solve conservative ADR problems on stationary or evolving closed surfaces;
-- evolve point-cloud surfaces by mean curvature;
-- build localized PU or divergence-free RBF approximations; or
-- extend a tested, inspectable numerical research codebase.
-
-It is research software, not a general-purpose finite-element package. The
-implementation favors transparent SciPy sparse algebra and targeted Numba
-kernels; the JAX repository is the accelerator-oriented member of the family.
-
-## At a glance
-
-| Component | What the public release provides |
-| --- | --- |
-| Geometry models | Smooth and piecewise-smooth embedded boundaries and surfaces, PHS geometric fits, RBF level sets, normals, projection, and geometry-aware bounding data |
-| Node generation | Seeded fixed- and variable-radius Poisson sampling in boxes, clipping by embedded geometry, boundary and ghost nodes, boundary-zone outer refinement, and dual node sets |
-| Local approximation | Centered and scaled Legendre polynomial bases, standard and overlapped PHS+poly RBF-FD, weighted-least-squares stencils, and local divergence-free PHS interpolation |
-| Fixed-domain solvers | Poisson, variable-coefficient and nonlinear variable-coefficient Poisson, BDF1--BDF3 diffusion, localized PU diffusion, and homogeneous or heterogeneous multispecies diffusion |
-| Moving-domain ADR | RK3 boundary motion, geometric reconstruction, carve/refill node updates, local PHS+Legendre departure-point interpolation, BDF1--BDF3 transport, and implicit diffusion--reaction solves in two and three dimensions |
-| Moving-surface ADR | Tangent-plane PHS+Legendre RBF-FD, cached-factor defect updates, adaptive surface hyperviscosity, spherical or toroidal geometry models, Lagrangian BDF1--BDF3 stepping, mass projection, and semi-Lagrangian history backfill |
-| Geometric surface evolution | Explicit or matrix-free semi-implicit tangent-plane RBF-FD mean-curvature-flow steps |
-| Numerical infrastructure | SciPy KD trees, batched LAPACK and sparse iterative solvers, plus cached Numba-parallel kernels for tangent-plane systems, stencil matvecs, SBF geometry, polynomial evaluation, and control-point selection |
+- Geometry models for smooth and piecewise-smooth embedded boundaries and
+  surfaces, including PHS geometric fits, RBF level sets, normals, and
+  projection
+- Seeded fixed- and variable-radius Poisson node generation, geometry-aware
+  clipping, boundary refinement, ghost nodes, and dual node sets
+- Shared Legendre polynomial and multi-index utilities
+- Standard and overlapped PHS+poly RBF-FD, weighted least squares, localized
+  partition-of-unity approximation, and divergence-free interpolation
+- Fixed-domain Poisson, variable and nonlinear variable-coefficient Poisson,
+  BDF diffusion, localized PU diffusion, and multispecies diffusion solvers
+- Semi-Lagrangian BDF1--BDF3 advection--diffusion--reaction on domains with
+  moving embedded boundaries in two and three dimensions
+- Tangent-plane RBF-FD operators for stationary and moving surfaces, including
+  defect-corrected updates, hyperviscosity, quadrature, mass projection,
+  marker rearrangement, and history backfill
+- Mean-curvature flow and transport on externally generated material
+  trajectories
+- Numba-parallel local kernels, SciPy KD trees, batched LAPACK, sparse GMRES,
+  and ILU preconditioning
 
 The main namespaces are `kernelpack.geometry`, `kernelpack.nodes`,
 `kernelpack.domain`, `kernelpack.manifold`, `kernelpack.poly`, `kernelpack.rbffd`,
 `kernelpack.divfree`, and `kernelpack.solvers`.
 
+## Supported workflows
+
+- Smooth and piecewise-smooth embedded geometry in two and three dimensions
+- Fixed- and variable-density Poisson sampling and level-set clipping
+- Standard, overlapped, weighted-least-squares, and PU local approximation
+- Fixed-domain elliptic, diffusion, and multispecies diffusion problems
+- Moving-domain advection--diffusion--reaction with embedded boundaries
+- Conservative transport and reaction--diffusion on stationary or evolving
+  closed surfaces
+- Geometric surface evolution, marker-quality monitoring, rearrangement, and
+  semi-Lagrangian BDF-history reconstruction
+- Local and global interpolation of scalar and divergence-free vector fields
+
+## Execution model
+
 Repeated numerical kernels run outside the Python interpreter: Numba builds
 tangent-plane local systems in parallel and applies stencil operators inside
 GMRES, while SciPy supplies compiled KD-tree searches, batched LU solves, ILU,
 and sparse Krylov iterations. Python remains responsible for user callbacks,
-time-level orchestration, and topology-changing node-set updates.
+time-level orchestration, file I/O, and topology-changing node-set updates.
 
 ## Requirements
 
@@ -239,8 +239,8 @@ python examples/surface_rearrangement_example.py
 ```
 
 The three-dimensional red-blood-cell example replays the public IBAMR
-trajectory used by the moving-surface paper. The downloader verifies the
-release archive before installing the trajectory locally; the solver then
+trajectory distributed in the shared data release. The downloader verifies
+the archive before installing the trajectory locally; the solver then
 reconstructs SBF geometry and normals, advances a source-free diffusing tracer
 with the same tangent-plane ADR machinery, enforces the quadrature mass law,
 and writes the final point cloud and concentration to `artifacts/`.
@@ -308,9 +308,11 @@ your work.
 
 | Code or method | Publication |
 | --- | --- |
+| Surface RBF-FD foundations | V. Shankar, G. B. Wright, R. M. Kirby, and A. L. Fogelson, [*A radial basis function (RBF)-finite difference (FD) method for diffusion and reaction-diffusion equations on surfaces*](https://doi.org/10.1007/s10915-014-9914-1), Journal of Scientific Computing 63 (2015), 745--768 |
 | Overlapped RBF-FD assembly (`kernelpack.rbffd.FDODiffOp`) | V. Shankar, [*The overlapped radial basis function-finite difference (RBF-FD) method: A generalization of RBF-FD*](https://doi.org/10.1016/j.jcp.2017.04.037), Journal of Computational Physics 342 (2017), 211--228 |
 | PHS geometric models and Poisson node generation (`kernelpack.geometry`, `kernelpack.nodes`) | V. Shankar, R. M. Kirby, and A. L. Fogelson, [*Robust node generation for mesh-free discretizations on irregular domains and surfaces*](https://doi.org/10.1137/17M114090X), SIAM Journal on Scientific Computing 40 (2018), A2584--A2608 |
 | Lower odd-degree PHS selection used by the solver stencil defaults | V. Shankar and A. L. Fogelson, [*Hyperviscosity-based stabilization for radial basis function-finite difference (RBF-FD) discretizations of advection-diffusion equations*](https://doi.org/10.1016/j.jcp.2018.06.036), Journal of Computational Physics 372 (2018), 616--639 |
+| Hyperviscosity for surface transport | V. Shankar, G. B. Wright, and A. Narayan, [*A robust hyperviscosity formulation for stable RBF-FD discretizations of advection-diffusion-reaction equations on manifolds*](https://doi.org/10.1137/19M1288747), SIAM Journal on Scientific Computing 42 (2020), A2371--A2401 |
 | Moving-domain ADR | V. Shankar, G. B. Wright, and A. L. Fogelson, [*An efficient high-order meshless method for advection-diffusion equations on time-varying irregular domains*](https://doi.org/10.1016/j.jcp.2021.110633), Journal of Computational Physics 445 (2021), 110633 |
 | Moving-surface ADR | M. Lowery, G. B. Wright, and V. Shankar, [*A high-order, meshless, Lagrangian--Eulerian RBF-FD method for advection--diffusion--reaction on moving manifolds*](https://doi.org/10.48550/arXiv.2608.19384), arXiv:2608.19384 (2026) |
 
